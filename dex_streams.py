@@ -59,24 +59,45 @@ async def stream_uniswap_v2_events(http_rpc_url: str,
                                    event_queue: aioprocessing.AioQueue,
                                    debug: bool = False):
     
+    # Web3インスタンスの作成
     w3 = Web3(Web3.HTTPProvider(http_rpc_url))
     
     block_number = w3.eth.get_block_number()
     signature = 'getReserves()((uint112,uint112,uint32))'  # reserve0, reserve1, blockTimestampLast
     
-    calls = []
+    # multicallライブラリの問題を回避するため、個別にコールを実行
+    reserves = {}
     for pool in pools:
-        pool_name = f'{pool["exchange"]}_{pool["version"]}_{pool["name"].replace("/", "")}'
-        call = Call(
-            pool['address'],
-            signature,
-            [(pool_name, lambda x: x)]
-        )
-        calls.append(call)
-        
-    multicall = Multicall(calls, _w3=w3)
-    result = multicall()
-    reserves = {k: list(v)[:2] for k, v in result.items()}
+        try:
+            pool_name = f'{pool["exchange"]}_{pool["version"]}_{pool["name"].replace("/", "")}'
+            
+            # 個別にコントラクトコールを実行
+            contract = w3.eth.contract(
+                address=pool['address'],
+                abi=[{
+                    "inputs": [],
+                    "name": "getReserves",
+                    "outputs": [
+                        {"name": "reserve0", "type": "uint112"},
+                        {"name": "reserve1", "type": "uint112"},
+                        {"name": "blockTimestampLast", "type": "uint32"}
+                    ],
+                    "stateMutability": "view",
+                    "type": "function"
+                }]
+            )
+            
+            result = contract.functions.getReserves().call()
+            reserves[pool_name] = [result[0], result[1]]  # reserve0, reserve1
+            
+            if debug:
+                print(f"Initial reserves for {pool_name}: {reserves[pool_name]}")
+                
+        except Exception as e:
+            if debug:
+                print(f"Error getting reserves for {pool['address']}: {e}")
+            reserves[pool_name] = [0, 0]  # デフォルト値
+    
     """
     reserves:
     {
@@ -199,7 +220,11 @@ if __name__ == '__main__':
     )
 
     loop = asyncio.get_event_loop()
+
+    new_blocks_task = loop.create_task(new_blocks_stream)
+    uniswap_v2_task = loop.create_task(uniswap_v2_stream)
+    
     loop.run_until_complete(asyncio.wait([
-        new_blocks_stream,
-        uniswap_v2_stream,
+        new_blocks_task,
+        uniswap_v2_task,
     ]))
