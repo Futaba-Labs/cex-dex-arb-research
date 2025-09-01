@@ -20,15 +20,19 @@ async def stream_new_blocks(ws_rpc_url: str,
                             debug: bool = False):
     
     async with websockets.connect(ws_rpc_url) as ws:
+        if debug:
+            print(f"Connecting to WS for new blocks: {ws_rpc_url}")
         subscription = {
-            'json': '2.0',
+            'jsonrpc': '2.0',
             'id': 1,
             'method': 'eth_subscribe',
             'params': ['newHeads']
         }
 
         await ws.send(json.dumps(subscription))
-        _ = await ws.recv()
+        ack = await ws.recv()
+        if debug:
+            print(f"Subscribed newHeads ack: {ack}")
 
         WEI = 10 ** 18
 
@@ -52,7 +56,7 @@ async def stream_new_blocks(ws_rpc_url: str,
             
 
 
-async def stream_uniswap_v2_events(http_rpc_url: str,
+async def stream_uniswap_v3_events(http_rpc_url: str,
                                    ws_rpc_url: str,
                                    tokens: Dict[str, List[Any]],
                                    pools: List[List[Any]],
@@ -63,67 +67,98 @@ async def stream_uniswap_v2_events(http_rpc_url: str,
     w3 = Web3(Web3.HTTPProvider(http_rpc_url))
     
     block_number = w3.eth.get_block_number()
-    signature = 'getReserves()((uint112,uint112,uint32))'  # reserve0, reserve1, blockTimestampLast
     
-    # multicallライブラリの問題を回避するため、個別にコールを実行
-    reserves = {}
-    for pool in pools:
+    # Uniswap V3 uses slot0() to get current sqrt price and tick
+    # We'll also need to get liquidity from the pool
+    slot0_signature = 'slot0()((uint160,int24,uint16,uint16,uint16,uint8,bool))'
+    liquidity_signature = 'liquidity()(uint128)'
+    
+    # Filter to V3 pools first
+    filtered_pools = [pool for pool in pools if pool['version'] == 3]
+    pools = {pool['address'].lower(): pool for pool in filtered_pools}
+
+    # Get initial pool data for V3 pools only
+    pool_data = {}
+    for pool in filtered_pools:
         try:
             pool_name = f'{pool["exchange"]}_{pool["version"]}_{pool["name"].replace("/", "")}'
             
-            # 個別にコントラクトコールを実行
+            # Get slot0 data (sqrt price, tick, etc.)
             contract = w3.eth.contract(
                 address=pool['address'],
-                abi=[{
-                    "inputs": [],
-                    "name": "getReserves",
-                    "outputs": [
-                        {"name": "reserve0", "type": "uint112"},
-                        {"name": "reserve1", "type": "uint112"},
-                        {"name": "blockTimestampLast", "type": "uint32"}
-                    ],
-                    "stateMutability": "view",
-                    "type": "function"
-                }]
+                abi=[
+                    {
+                        "inputs": [],
+                        "name": "slot0",
+                        "outputs": [
+                            {"name": "sqrtPriceX96", "type": "uint160"},
+                            {"name": "tick", "type": "int24"},
+                            {"name": "observationIndex", "type": "uint16"},
+                            {"name": "observationCardinality", "type": "uint16"},
+                            {"name": "observationCardinalityNext", "type": "uint16"},
+                            {"name": "feeProtocol", "type": "uint8"},
+                            {"name": "unlocked", "type": "bool"}
+                        ],
+                        "stateMutability": "view",
+                        "type": "function"
+                    },
+                    {
+                        "inputs": [],
+                        "name": "liquidity",
+                        "outputs": [{"name": "", "type": "uint128"}],
+                        "stateMutability": "view",
+                        "type": "function"
+                    }
+                ]
             )
             
-            result = contract.functions.getReserves().call()
-            reserves[pool_name] = [result[0], result[1]]  # reserve0, reserve1
+            slot0 = contract.functions.slot0().call()
+            liquidity = contract.functions.liquidity().call()
+            
+            pool_data[pool_name] = {
+                'sqrtPriceX96': slot0[0],
+                'tick': slot0[1],
+                'liquidity': liquidity
+            }
             
             if debug:
-                print(f"Initial reserves for {pool_name}: {reserves[pool_name]}")
+                print(f"Initial data for {pool_name}: sqrtPriceX96={slot0[0]}, tick={slot0[1]}, liquidity={liquidity}")
                 
         except Exception as e:
             if debug:
-                print(f"Error getting reserves for {pool['address']}: {e}")
-            reserves[pool_name] = [0, 0]  # デフォルト値
+                print(f"Error getting data for {pool['address']}: {e}")
+            pool_data[pool_name] = {
+                'sqrtPriceX96': 0,
+                'tick': 0,
+                'liquidity': 0
+            }
     
     """
-    reserves:
+    pool_data:
     {
-        'uniswap_2_ETHUSDT': [17368643486106939361172, 31867695075486],
-        'sushiswap_2_ETHUSDT': [5033262526671305584632, 9254792586342]
+        'uniswap_3_ETHUSDT': {'sqrtPriceX96': 123456789, 'tick': 12345, 'liquidity': 987654321},
+        'sushiswap_3_ETHUSDT': {'sqrtPriceX96': 234567890, 'tick': 23456, 'liquidity': 876543210}
     }
     """
     
-    filtered_pools = [pool for pool in pools if pool['version'] == 2]
-    pools = {pool['address'].lower(): pool for pool in filtered_pools}
+    # pools dict already prepared above
     
     def _publish(block_number: int,
                  pool: Dict[str, Any],
-                 data: List[int] = []):
+                 data: List[Any] = []):
         
         exchange = pool['exchange']
         version = pool['version']
         symbol = f'{pool["token0"]}{pool["token1"]}'
 
-        # save to "reserves" in memory
+        # save to "pool_data" in memory
         symbol_key = f'{exchange}_{version}_{symbol}'
         
-        if len(data) == 2:
-            # initial publishing occurs without data(=Sync event data)
-            reserves[symbol_key][0] = data[0]
-            reserves[symbol_key][1] = data[1]
+        if len(data) == 3:
+            # Update pool data with new Swap event data
+            pool_data[symbol_key]['sqrtPriceX96'] = data[0]
+            pool_data[symbol_key]['tick'] = data[1]
+            pool_data[symbol_key]['liquidity'] = data[2]
             
         token_idx = {
             pool['token0']: 0,
@@ -135,10 +170,7 @@ async def stream_uniswap_v2_events(http_rpc_url: str,
             pool['token1']: tokens[pool['token1']][1],
         }
         
-        reserve_update = {
-            pool['token0']: reserves[symbol_key][0],
-            pool['token1']: reserves[symbol_key][1],
-        }
+        current_data = pool_data[symbol_key]
         
         pool_update = {
             'source': 'dex',
@@ -149,7 +181,9 @@ async def stream_uniswap_v2_events(http_rpc_url: str,
             'symbol': symbol,
             'token_idx': token_idx,
             'decimals': decimals,
-            'reserves': reserve_update,
+            'sqrtPriceX96': current_data['sqrtPriceX96'],
+            'tick': current_data['tick'],
+            'liquidity': current_data['liquidity'],
         }
         
         if not debug:
@@ -158,26 +192,37 @@ async def stream_uniswap_v2_events(http_rpc_url: str,
             print(pool_update)
             
     """
-    Send initial reserve data so that price can be calculated even if the pool is idle
+    Send initial pool data so that price can be calculated even if the pool is idle
     """
     for address, pool in pools.items():
         _publish(block_number, pool)
 
-    sync_event_selector = w3.keccak(text='Sync(uint112,uint112)').hex()
+    # Uniswap V3 Swap event signature
+    # Ensure 0x-prefixed topic for subscription
+    swap_event_selector = w3.keccak(text='Swap(address,address,int256,int256,uint160,uint128,int24)').hex()
+    if not swap_event_selector.startswith('0x'):
+        swap_event_selector = '0x' + swap_event_selector
     
     async with websockets.connect(ws_rpc_url) as ws:
+        if debug:
+            print(f"Connecting to WS for Uniswap V3 logs: {ws_rpc_url}")
         subscription = {
-            'json': '2.0',
+            'jsonrpc': '2.0',
             'id': 1,
             'method': 'eth_subscribe',
             'params': [
                 'logs',
-                {'topics': [sync_event_selector]}
+                {
+                    'address': list(pools.keys()),
+                    'topics': [swap_event_selector]
+                }
             ]
         }
 
         await ws.send(json.dumps(subscription))
-        _ = await ws.recv()
+        ack = await ws.recv()
+        if debug:
+            print(f"Subscribed logs ack: {ack}")
 
         while True:
             msg = await asyncio.wait_for(ws.recv(), timeout=60 * 10)
@@ -187,11 +232,20 @@ async def stream_uniswap_v2_events(http_rpc_url: str,
             if address in pools:
                 block_number = int(event['blockNumber'], base=16)
                 pool = pools[address]
-                data = eth_abi.decode(
-                    ['uint112', 'uint112'],
+                
+                # Parse Swap event data (non-indexed parameters only):
+                # amount0, amount1, sqrtPriceX96, liquidity, tick
+                swap_data = eth_abi.decode(
+                    ['int256', 'int256', 'uint160', 'uint128', 'int24'],
                     eth_utils.decode_hex(event['data'])
                 )
-                _publish(block_number, pool, data)
+                
+                # Extract relevant data: sqrtPriceX96, tick, liquidity
+                sqrtPriceX96 = swap_data[2]
+                liquidity = swap_data[3]
+                tick = swap_data[4]
+                
+                _publish(block_number, pool, [sqrtPriceX96, tick, liquidity])
                 
 
 if __name__ == '__main__':
@@ -214,17 +268,17 @@ if __name__ == '__main__':
         tag='new_blocks_stream'
     )
     
-    uniswap_v2_stream = reconnecting_websocket_loop(
-        partial(stream_uniswap_v2_events, HTTP_RPC_URL, WS_RPC_URL, TOKENS, POOLS, None, True),
-        tag='uniswap_v2_stream'
+    uniswap_v3_stream = reconnecting_websocket_loop(
+        partial(stream_uniswap_v3_events, HTTP_RPC_URL, WS_RPC_URL, TOKENS, POOLS, None, True),
+        tag='uniswap_v3_stream'
     )
 
     loop = asyncio.get_event_loop()
 
     new_blocks_task = loop.create_task(new_blocks_stream)
-    uniswap_v2_task = loop.create_task(uniswap_v2_stream)
+    uniswap_v3_task = loop.create_task(uniswap_v3_stream)
     
     loop.run_until_complete(asyncio.wait([
         new_blocks_task,
-        uniswap_v2_task,
+        uniswap_v3_task,
     ]))
