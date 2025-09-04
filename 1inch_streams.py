@@ -23,8 +23,10 @@ async def stream_1inch_limit_orderbook_events(http_rpc_url: str,
     order_filled_event_selector = w3.keccak(text='OrderFilled(address,bytes32,uint256)').hex()
     
     async with websockets.connect(ws_rpc_url) as ws:
+        if debug:
+            print(f"Connecting to WS for 1inch events: {ws_rpc_url}")
         subscription = {
-            'json': '2.0',
+            'jsonrpc': '2.0',
             'id': 1,
             'method': 'eth_subscribe',
             'params': [
@@ -34,7 +36,9 @@ async def stream_1inch_limit_orderbook_events(http_rpc_url: str,
         }
 
         await ws.send(json.dumps(subscription))
-        _ = await ws.recv()
+        ack = await ws.recv()
+        if debug:
+            print(f"Subscribed 1inch logs ack: {ack}")
         
         while True:
             msg = await asyncio.wait_for(ws.recv(), timeout=60 * 10)
@@ -84,6 +88,7 @@ if __name__ == '__main__':
     )
 
     loop = asyncio.get_event_loop()
+    inch_task = loop.create_task(inch_stream)
     loop.run_until_complete(asyncio.wait([
-        inch_stream,
+        inch_task,
     ]))

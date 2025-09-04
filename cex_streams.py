@@ -183,7 +183,7 @@ async def stream_okx_usdm_orderbook(symbols: List[str],
         for d in instruments['data']
     }
     
-    async with websockets.connect('wss://ws.okx.com:8443/ws/v5/public') as ws:
+    async with websockets.connect('wss://ws.okx.com:8443/ws/v5/public', ping_interval=20, ping_timeout=20) as ws:
         args = [{'channel': 'books5', 'instId': f'{s.replace("/", "-")}-SWAP'} for s in symbols]
         subscription = {
             'op': 'subscribe',
@@ -193,7 +193,11 @@ async def stream_okx_usdm_orderbook(symbols: List[str],
         _ = await ws.recv()
 
         while True:
-            msg = await asyncio.wait_for(ws.recv(), timeout=15)
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=15)
+            except asyncio.TimeoutError:
+                await ws.ping()
+                continue
             data = json.loads(msg)
             multiplier = multipliers[data['arg']['instId']]
             symbol = data['arg']['instId'].replace('-SWAP', '').replace('-', '')

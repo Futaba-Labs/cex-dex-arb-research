@@ -6,18 +6,32 @@ from typing import Any, Callable, Dict
 
 
 async def reconnecting_websocket_loop(stream_fn: Callable, tag: str):
+    """Run a streaming coroutine with resilient reconnection.
+
+    Any exception triggers a short backoff and a retry, so transient
+    decode/timeout errors do not permanently stop the stream.
+    """
+    backoff = 2
     while True:
         try:
             await stream_fn()
+            # If the stream_fn returns normally, restart after short delay
+            await asyncio.sleep(backoff)
 
         except (websockets.ConnectionClosedError, websockets.ConnectionClosedOK) as e:
             print(f'{tag} websocket connection closed: {e}')
             print('Reconnecting...')
-            await asyncio.sleep(2)
+            await asyncio.sleep(backoff)
+
+        except asyncio.TimeoutError as e:
+            print(f'{tag} websocket timeout: {e}')
+            print('Reconnecting...')
+            await asyncio.sleep(backoff)
 
         except Exception as e:
             print(f'An error has occurred with {tag} websocket: {e}')
-            break
+            print('Reconnecting...')
+            await asyncio.sleep(backoff)
 
 
 def calculate_next_block_base_fee(block: Dict[str, Any]):
