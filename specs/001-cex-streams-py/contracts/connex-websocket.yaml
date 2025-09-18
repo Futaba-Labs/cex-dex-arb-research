@@ -1,0 +1,168 @@
+# WebSocket Contract for Connex Market Data Stream
+# Note: This is based on common WebSocket patterns as specific Connex docs are not available
+
+asyncapi: 2.6.0
+info:
+  title: Connex WebSocket Market Data API
+  version: 1.0.0
+  description: Real-time market data streaming via WebSocket
+
+servers:
+  production:
+    url: wss://api.connex.com/ws/v1/market
+    protocol: wss
+    description: Production WebSocket endpoint
+
+channels:
+  /orderbook:
+    subscribe:
+      summary: Receive orderbook updates
+      message:
+        oneOf:
+          - $ref: '#/components/messages/OrderbookSnapshot'
+          - $ref: '#/components/messages/OrderbookUpdate'
+    publish:
+      summary: Subscribe to orderbook streams
+      message:
+        $ref: '#/components/messages/Subscribe'
+
+components:
+  messages:
+    Subscribe:
+      name: subscribe
+      title: Subscribe to market streams
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - method
+          - params
+        properties:
+          id:
+            type: integer
+            description: Request ID
+          method:
+            type: string
+            enum: ["SUBSCRIBE"]
+          params:
+            type: object
+            required:
+              - symbols
+              - channels
+            properties:
+              symbols:
+                type: array
+                items:
+                  type: string
+                  example: "ETH/USDT"
+              channels:
+                type: array
+                items:
+                  type: string
+                  enum: ["orderbook", "trades", "ticker"]
+              exchanges:
+                type: array
+                items:
+                  type: string
+                  enum: ["binance", "okx"]
+              depth:
+                type: integer
+                default: 20
+                description: Orderbook depth
+
+    OrderbookSnapshot:
+      name: orderbookSnapshot
+      title: Full orderbook snapshot
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - type
+          - symbol
+          - exchange
+          - timestamp
+          - bids
+          - asks
+        properties:
+          type:
+            type: string
+            enum: ["snapshot"]
+          symbol:
+            type: string
+            example: "ETH/USDT"
+          exchange:
+            type: string
+            example: "binance"
+          timestamp:
+            type: number
+            format: int64
+          sequence:
+            type: integer
+          bids:
+            type: array
+            items:
+              type: array
+              items:
+                - type: string
+                  description: Price
+                - type: string
+                  description: Quantity
+          asks:
+            type: array
+            items:
+              type: array
+              items:
+                - type: string
+                  description: Price
+                - type: string
+                  description: Quantity
+
+    OrderbookUpdate:
+      name: orderbookUpdate
+      title: Incremental orderbook update
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - type
+          - symbol
+          - exchange
+          - timestamp
+          - updates
+        properties:
+          type:
+            type: string
+            enum: ["update"]
+          symbol:
+            type: string
+          exchange:
+            type: string
+          timestamp:
+            type: number
+          sequence:
+            type: integer
+          updates:
+            type: object
+            properties:
+              bids:
+                type: array
+                items:
+                  type: array
+              asks:
+                type: array
+                items:
+                  type: array
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        details:
+          type: object
