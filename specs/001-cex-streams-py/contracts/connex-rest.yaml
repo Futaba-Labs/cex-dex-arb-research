@@ -1,0 +1,232 @@
+# REST API Contract for Connex Market Data
+# Note: This is based on common REST patterns as specific Connex docs are not available
+
+openapi: 3.0.3
+info:
+  title: Connex Market Data REST API
+  version: 1.0.0
+  description: REST endpoints for market data retrieval
+
+servers:
+  - url: https://api.connex.com/v1
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /orderbook/{exchange}/{symbol}:
+    get:
+      summary: Get orderbook snapshot
+      description: Retrieve current orderbook for a symbol on specific exchange
+      parameters:
+        - name: exchange
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [binance, okx]
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+            example: ETHUSDT
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Orderbook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /symbols:
+    get:
+      summary: List supported symbols
+      description: Get list of all supported trading pairs across exchanges
+      parameters:
+        - name: exchange
+          in: query
+          schema:
+            type: string
+            enum: [binance, okx]
+      responses:
+        '200':
+          description: List of symbols
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbols:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Symbol'
+
+  /status:
+    get:
+      summary: API health status
+      description: Check API and exchange connectivity status
+      security: []
+      responses:
+        '200':
+          description: System status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    Orderbook:
+      type: object
+      required:
+        - symbol
+        - exchange
+        - timestamp
+        - bids
+        - asks
+      properties:
+        symbol:
+          type: string
+          example: ETH/USDT
+        exchange:
+          type: string
+          example: binance
+        timestamp:
+          type: integer
+          format: int64
+        bids:
+          type: array
+          items:
+            type: object
+            properties:
+              price:
+                type: string
+              quantity:
+                type: string
+        asks:
+          type: array
+          items:
+            type: object
+            properties:
+              price:
+                type: string
+              quantity:
+                type: string
+        lastUpdateId:
+          type: integer
+
+    Symbol:
+      type: object
+      required:
+        - symbol
+        - exchange
+        - status
+      properties:
+        symbol:
+          type: string
+        exchange:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]
+        minQuantity:
+          type: string
+        maxQuantity:
+          type: string
+        tickSize:
+          type: string
+
+    Status:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, down]
+        exchanges:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+              latency:
+                type: integer
+        timestamp:
+          type: integer
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        code:
+          type: integer
+        details:
+          type: object
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
