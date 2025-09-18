@@ -10,12 +10,24 @@ The main entry point for this project is the Jupyter Notebook file: **cex-dex-ar
 
 #### 1. Setup environment variables:
 
-First, you need to setup your environment variables by simply copying and pasting the file content of .env.example to .env file.
+Copy the contents of `.env.example` into a new `.env` file and fill in the values that apply to your environment.
 
 ```bash
 HTTP_RPC_URL=http://localhost:8545
 WS_RPC_URL=ws://localhost:8546
+1INCH_API=your-1inch-api-key
+CONNEX_API_KEY=your-connex-api-key
+CONNEX_API_SECRET=your-connex-api-secret
+CONNEX_WS_URL=wss://your-connex-websocket-endpoint
+CONNEX_REST_URL=https://your-connex-rest-endpoint
 ```
+
+##### Connex credentials
+
+1. Sign in to your Connex account (or request access from your Connex account manager if you do not yet have one).
+2. Navigate to the API Keys section of the dashboard and create a new key pair; copy the key into `CONNEX_API_KEY` and the secret into `CONNEX_API_SECRET`.
+3. From the Connex integration documentation copy the WebSocket endpoint into `CONNEX_WS_URL` and the REST endpoint into `CONNEX_REST_URL`.
+4. Store the credentials securely; rotate the key/secret whenever you regenerate credentials in Connex.
 
 #### 2. Understanding CEX streams and DEX streams:
 
